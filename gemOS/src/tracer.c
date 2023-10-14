@@ -37,7 +37,23 @@ int trace_buffer_write(struct file *filep, char *buff, u32 count)
 
 int sys_create_trace_buffer(struct exec_context *current, int mode)
 {
-	return 0;
+	int free_file_number = 0;
+	for(free_file_number = 0; free_file_number < MAX_OPEN_FILES; free_file_number++){
+		if(current->files[free_file_number] == NULL) break;
+	}
+	if(free_file_number == MAX_OPEN_FILES) return -EINVAL;
+	current->files[free_file_number] = (struct file *) os_alloc(sizeof(struct file));
+	if(current->files[free_file_number] == NULL) return -ENOMEM;
+	struct file* fileobj = current->files[free_file_number];
+	fileobj->trace_buffer = (struct trace_buffer_info *) os_alloc(sizeof(struct trace_buffer_info));
+	if(fileobj->trace_buffer == NULL) return -ENOMEM;
+	// TODO - Initialise trace_buffer_info object, based on implementation
+	fileobj->fops = (struct fileops *) os_alloc(sizeof(struct fileops));
+	if(fileobj->fops == NULL) return -ENOMEM;
+	fileobj->fops->read = trace_buffer_read;
+	fileobj->fops->write = trace_buffer_write;
+	fileobj->fops->close = trace_buffer_close;
+	return free_file_number;
 }
 
 ///////////////////////////////////////////////////////////////////////////

@@ -4,8 +4,6 @@
 #include<entry.h>
 #include<file.h>
 #include<tracer.h>
-
-
 ///////////////////////////////////////////////////////////////////////////
 //// 		Start of Trace buffer functionality 		      /////
 ///////////////////////////////////////////////////////////////////////////
@@ -19,6 +17,10 @@ int is_valid_mem_range(unsigned long buff, u32 count, int access_bit)
 
 long trace_buffer_close(struct file *filep)
 {
+	os_page_free(USER_REG, filep->trace_buffer->trace_buffer);
+	os_free(filep->trace_buffer, sizeof(struct trace_buffer_info));
+	os_free(filep->fops, sizeof(struct fileops));
+	os_free(filep, sizeof(struct file));
 	return 0;	
 }
 
@@ -26,13 +28,36 @@ long trace_buffer_close(struct file *filep)
 
 int trace_buffer_read(struct file *filep, char *buff, u32 count)
 {
-	return 0;
+	if(filep == NULL || buff == NULL) return -EINVAL;
+	struct trace_buffer_info * trace_buff = filep->trace_buffer;
+	if(trace_buff == NULL) return -EINVAL;
+	if(trace_buff->occupy == 0) return 0;
+	int size = trace_buff->occupy;
+	count = ((size < count)?size:count);
+	for(int i = 0; i < count; i++){
+		buff[i] = trace_buff->trace_buffer[(trace_buff->readPos + i)%TRACE_BUFFER_MAX_SIZE];
+	}
+	trace_buff->readPos = (trace_buff->readPos + count)%TRACE_BUFFER_MAX_SIZE;
+	trace_buff->occupy -= count;
+	return count;
 }
 
 
 int trace_buffer_write(struct file *filep, char *buff, u32 count)
 {
-    	return 0;
+	if(filep == NULL) return -EINVAL;
+	if(buff == NULL) return -EINVAL;
+	struct trace_buffer_info * trace_buff = filep->trace_buffer;
+	if(trace_buff == NULL) return -EINVAL;
+	if(trace_buff->occupy == TRACE_BUFFER_MAX_SIZE) return 0;
+	int remainSize = TRACE_BUFFER_MAX_SIZE - (trace_buff->occupy);
+	count = ((remainSize < count)?remainSize:count);
+	for(int i = 0; i < count; i++){
+		trace_buff->trace_buffer[(trace_buff->writePos + i)%TRACE_BUFFER_MAX_SIZE] = buff[i];
+	}
+	trace_buff->writePos = ((trace_buff->writePos + count)%TRACE_BUFFER_MAX_SIZE);
+	trace_buff->occupy += count;
+	return count;
 }
 
 int sys_create_trace_buffer(struct exec_context *current, int mode)
@@ -45,14 +70,24 @@ int sys_create_trace_buffer(struct exec_context *current, int mode)
 	current->files[free_file_number] = (struct file *) os_alloc(sizeof(struct file));
 	if(current->files[free_file_number] == NULL) return -ENOMEM;
 	struct file* fileobj = current->files[free_file_number];
+	fileobj->type = TRACE_BUFFER;
+	fileobj->mode = mode;
+	fileobj->inode = NULL;
+	fileobj->offp = 0;
+	fileobj->ref_count = 1;
 	fileobj->trace_buffer = (struct trace_buffer_info *) os_alloc(sizeof(struct trace_buffer_info));
+	fileobj->trace_buffer->trace_buffer = (char *) os_page_alloc(USER_REG);
+	if(fileobj->trace_buffer->trace_buffer == NULL) return -ENOMEM;
 	if(fileobj->trace_buffer == NULL) return -ENOMEM;
+	fileobj->trace_buffer->occupy = 0;
+	fileobj->trace_buffer->readPos = 0;
+	fileobj->trace_buffer->writePos = 0;
 	// TODO - Initialise trace_buffer_info object, based on implementation
 	fileobj->fops = (struct fileops *) os_alloc(sizeof(struct fileops));
 	if(fileobj->fops == NULL) return -ENOMEM;
-	fileobj->fops->read = trace_buffer_read;
-	fileobj->fops->write = trace_buffer_write;
-	fileobj->fops->close = trace_buffer_close;
+	fileobj->fops->read = &trace_buffer_read;
+	fileobj->fops->write = &trace_buffer_write;
+	fileobj->fops->close = &trace_buffer_close;
 	return free_file_number;
 }
 

@@ -14,7 +14,10 @@
 //Trace buffer information structure
 struct trace_buffer_info
 {
-
+	char * trace_buffer;
+	int readPos;
+	int writePos;
+	int occupy;
 };
 
 

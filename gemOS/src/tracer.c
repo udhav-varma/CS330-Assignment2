@@ -7,9 +7,28 @@
 ///////////////////////////////////////////////////////////////////////////
 //// 		Start of Trace buffer functionality 		      /////
 ///////////////////////////////////////////////////////////////////////////
-
+/**
+ * Returns 1 if valid mem range, 0 if not a valid mem range, -1 for error
+*/
 int is_valid_mem_range(unsigned long buff, u32 count, int access_bit) 
 {
+	if(count < 0) return -1;
+	struct exec_context * current_pcb = get_current_ctx();
+	for(int seg = 0; seg < MAX_MM_SEGS; seg++){
+		struct mm_segment* current_seg = &(current_pcb->mms[seg]);
+		if((current_seg->access_flags&access_bit) == (access_bit)){
+			unsigned long start = current_seg->start;
+			unsigned long end = ((seg == MM_SEG_STACK)?current_seg->end:current_seg->next_free);
+			if(buff >= start && (buff + count <= end)) return 1;
+		}
+	}
+	struct vm_area * current_vm = current_pcb->vm_area;
+	while(current_vm != NULL){
+		if((current_vm->access_flags&access_bit) == (access_bit)){
+			if(buff >= (current_vm->vm_start) && (buff + count <= (current_vm->vm_end))) return 1;
+		}
+		current_vm = current_vm->vm_next;
+	}
 	return 0;
 }
 
@@ -29,6 +48,9 @@ long trace_buffer_close(struct file *filep)
 int trace_buffer_read(struct file *filep, char *buff, u32 count)
 {
 	if(filep == NULL || buff == NULL) return -EINVAL;
+	int valid_flag = is_valid_mem_range((unsigned long) buff, count, 2);
+	if(valid_flag == -1) return -EINVAL;
+	else if(valid_flag == 0) return -EBADMEM;
 	struct trace_buffer_info * trace_buff = filep->trace_buffer;
 	if(trace_buff == NULL) return -EINVAL;
 	if(trace_buff->occupy == 0) return 0;
@@ -47,6 +69,9 @@ int trace_buffer_write(struct file *filep, char *buff, u32 count)
 {
 	if(filep == NULL) return -EINVAL;
 	if(buff == NULL) return -EINVAL;
+	int valid_flag = is_valid_mem_range((unsigned long) buff, count, 1);
+	if(valid_flag == -1) return -EINVAL;
+	else if(valid_flag == 0) return -EBADMEM;
 	struct trace_buffer_info * trace_buff = filep->trace_buffer;
 	if(trace_buff == NULL) return -EINVAL;
 	if(trace_buff->occupy == TRACE_BUFFER_MAX_SIZE) return 0;

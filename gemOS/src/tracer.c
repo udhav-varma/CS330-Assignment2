@@ -47,7 +47,7 @@ long trace_buffer_close(struct file *filep)
 
 int trace_buffer_read(struct file *filep, char *buff, u32 count)
 {
-	if(filep == NULL || buff == NULL) return -EINVAL;
+	if(filep == NULL) return -EINVAL;
 	int valid_flag = is_valid_mem_range((unsigned long) buff, count, 2);
 	if(valid_flag == -1) return -EINVAL;
 	else if(valid_flag == 0) return -EBADMEM;
@@ -68,7 +68,6 @@ int trace_buffer_read(struct file *filep, char *buff, u32 count)
 int trace_buffer_write(struct file *filep, char *buff, u32 count)
 {
 	if(filep == NULL) return -EINVAL;
-	if(buff == NULL) return -EINVAL;
 	int valid_flag = is_valid_mem_range((unsigned long) buff, count, 1);
 	if(valid_flag == -1) return -EINVAL;
 	else if(valid_flag == 0) return -EBADMEM;
@@ -87,6 +86,7 @@ int trace_buffer_write(struct file *filep, char *buff, u32 count)
 
 int sys_create_trace_buffer(struct exec_context *current, int mode)
 {
+	if(mode < 1 || mode > 3) return -EINVAL;
 	int free_file_number = 0;
 	for(free_file_number = 0; free_file_number < MAX_OPEN_FILES; free_file_number++){
 		if(current->files[free_file_number] == NULL) break;
@@ -335,6 +335,9 @@ int sys_strace(struct exec_context *current, int syscall_num, int action)
 				pos = pos->next;
 			}
 			if(pos == NULL){
+				if(head->count == STRACE_MAX){
+					return -EINVAL;
+				}
 				struct strace_info * newnode = os_alloc(sizeof(struct strace_info));
 				newnode->next = NULL;
 				newnode->syscall_num = syscall_num;

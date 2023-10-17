@@ -345,6 +345,7 @@ int sys_strace(struct exec_context *current, int syscall_num, int action)
 				head->last = newnode;
 				head->count++;
 			}
+			else return -EINVAL;
 		}
 	}
 	else if(action == REMOVE_STRACE){
@@ -454,19 +455,190 @@ int sys_end_strace(struct exec_context *current)
 
 long do_ftrace(struct exec_context *ctx, unsigned long faddr, long action, long nargs, int fd_trace_buffer)
 {
+	if(ctx == NULL) return -EINVAL;
+	struct ftrace_head * head;
+	if(ctx->ft_md_base == NULL){
+		ctx->ft_md_base = os_alloc(sizeof(struct ftrace_head));
+		head = ctx->ft_md_base;
+		head->count = 0;
+		head->last = head->next = NULL;
+	}
+	else head = ctx->ft_md_base;
+	int in_list = 0;
+	struct ftrace_info * pos = head->next;
+	while(pos != NULL){
+		if(pos->faddr == faddr){
+			in_list = 1;
+			break;
+		}
+		pos = pos->next;
+	}
+
+	if(action == ADD_FTRACE){
+		if(in_list) return -EINVAL;
+		if(head->count == FTRACE_MAX) return -EINVAL;
+		struct ftrace_info * ppos = pos = head->next;
+		while(pos != NULL){
+			ppos = pos;
+			pos = pos->next;
+		}
+		struct ftrace_info * newnode = os_alloc(sizeof(struct ftrace_info));
+		newnode->faddr = faddr;
+		newnode->fd = fd_trace_buffer;
+		newnode->capture_backtrace = 0;
+		newnode->next = NULL;
+		newnode->num_args = nargs;
+		if(head->next == NULL){
+			head->next = head->last = newnode;
+		}
+		else{
+			ppos->next = newnode;
+			head->last = newnode;
+		}
+		head->count++;
+		return 0;
+	}
+	else if(action == REMOVE_FTRACE){
+		if(!in_list) return -EINVAL;
+		struct ftrace_info * ppos = pos = head->next;
+		while(pos != NULL && pos->faddr != faddr){
+			ppos = pos;
+			pos = pos->next;
+		}
+		head->count--;
+		if(pos == head->next){
+			head->next = pos->next;
+			if(head->next == NULL) head->last = NULL;
+			os_free(pos, sizeof(struct ftrace_head));
+		}
+		else{
+			ppos->next = pos->next;
+			if(ppos->next == NULL){
+				head->last = ppos;
+			}
+			os_free(pos, sizeof(struct ftrace_head));
+		}
+		return 0;
+	}
+	else if(action == ENABLE_FTRACE){
+		if(in_list == 0) return -EINVAL;
+		if(*(((char *) faddr)) != INV_OPCODE){
+			for(int i = 0; i < 4; i++){
+				pos->code_backup[i] = *(i + ((u8 *) faddr));
+			}
+			for(int i = 0; i < 4; i++){
+				*(i + ((u8 *) faddr)) = INV_OPCODE;
+			}
+		}
+	}
+	else if(action == DISABLE_FTRACE){
+		if(in_list == 0) return -EINVAL;
+		if(*((char *) faddr) == INV_OPCODE){
+			for(int i = 0; i < 4; i++){
+				*(i + ((u8 *) faddr)) = pos->code_backup[i];
+			}
+		}
+	}
+	else if(action == ENABLE_BACKTRACE){
+		if(in_list == 0) return -EINVAL;
+		pos->capture_backtrace = 1;
+		if(*(((char *) faddr)) != INV_OPCODE){
+			for(int i = 0; i < 4; i++){
+				pos->code_backup[i] = *(i + ((u8 *) faddr));
+			}
+			for(int i = 0; i < 4; i++){
+				*(i + ((u8 *) faddr)) = INV_OPCODE;
+			}
+		}
+	}
+	else if(action == DISABLE_BACKTRACE){
+		if(in_list == 0) return -EINVAL;
+		pos->capture_backtrace = 0;
+		if(*((char *) faddr) == INV_OPCODE){
+			for(int i = 0; i < 4; i++){
+				*(i + ((u8 *) faddr)) = pos->code_backup[i];
+			}
+		}
+	}
+	else return -EINVAL;
     return 0;
 }
 
 //Fault handler
 long handle_ftrace_fault(struct user_regs *regs)
 {
-        return 0;
+	struct exec_context * current_ctx = get_current_ctx();
+	struct ftrace_head * head = current_ctx->ft_md_base;
+	if(head == NULL) return -EINVAL;
+	struct ftrace_info * pos = head->next;
+	while(pos != NULL && pos->faddr != (regs->entry_rip)) pos = pos->next;
+	if(pos == NULL) return -EINVAL;
+	int nargs = pos->num_args;
+	u64 write_data[1 + nargs];
+	write_data[0] = pos->faddr;
+	u64 args[6] = {regs->rdi, regs->rsi, regs->rdx, regs->rcx, regs->r8, regs->r9};
+	if(nargs > 6) return -EINVAL;
+	for(int i = 0; i < nargs; i++){
+		write_data[i + 1] = args[i];
+	}
+	regs->entry_rsp -= 8;
+	*(u64 *) regs->entry_rsp = regs->rbp;
+	regs->rbp = regs->entry_rsp;
+	regs->entry_rip += 4;
+
+	if(pos->capture_backtrace == 0){
+		u64 cnt = 1 + nargs;
+		struct file * trace_buff = current_ctx->files[pos->fd];
+		trace_buffer_write_unsafe(trace_buff, (char *) &cnt, sizeof(u64));
+		trace_buffer_write_unsafe(trace_buff, (char *) write_data, cnt * sizeof(u64));
+	}
+	else{
+		int num_backtrace = 1;
+		u64 base_ptr = regs->rbp;
+		u64 return_addr = *((u64*) (base_ptr + 8));
+		while(return_addr != END_ADDR){
+			num_backtrace++;
+			base_ptr = *((u64 *) base_ptr);
+			return_addr = *((u64 *) (base_ptr + 8));
+		}
+		u64 backtrace_write[num_backtrace];
+		backtrace_write[0] = pos->faddr;
+		base_ptr = regs->rbp;
+		return_addr = *((u64 *) (base_ptr + 8));
+		int idx = 1;
+		while(return_addr != END_ADDR){
+			backtrace_write[idx++] = return_addr;
+			base_ptr = *((u64 *) base_ptr);
+			return_addr = *((u64 *) (base_ptr + 8));
+		}
+		u64 cnt = 1 + nargs + num_backtrace;
+		struct file * trace_buff = current_ctx->files[pos->fd];
+		trace_buffer_write_unsafe(trace_buff, (char *) &cnt, sizeof(u64));
+		trace_buffer_write_unsafe(trace_buff, (char *)write_data, (1 + nargs)*sizeof(u64));
+		trace_buffer_write_unsafe(trace_buff, (char *) backtrace_write, num_backtrace*sizeof(u64));
+	}
+	return 0;
 }
 
 
 int sys_read_ftrace(struct file *filep, char *buff, u64 count)
 {
-    return 0;
+	if(filep == NULL) return -EINVAL;
+	if(count < 0) return -EINVAL;
+	int buff_pos = 0;
+	while(count > 0){
+		u64 * ptr = os_alloc(sizeof(u64));
+		int r = trace_buffer_read_unsafe(filep, (char *) ptr, sizeof(u64));
+		if(r <= 0) return buff_pos;
+		u64 num_data = *ptr;
+		for(int i = 0; i < num_data; i++){
+			int r = trace_buffer_read_unsafe(filep, buff + buff_pos, sizeof(u64));
+			buff_pos += sizeof(u64);
+		}
+		os_free(ptr, sizeof(u64));
+		count--;
+	}
+	return buff_pos;
 }
 
 

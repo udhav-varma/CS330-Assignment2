@@ -379,6 +379,8 @@ int sys_read_strace(struct file *filep, char *buff, u64 count)
 	if(filep == NULL) return -EINVAL;
 	if(buff == NULL) return -EINVAL;
 	if(count < 0) return -EINVAL;
+	int access_flag = is_valid_mem_range((unsigned long) buff, count, 2);
+	if(access_flag != 1) return -EINVAL;
 	int buff_pos = 0;
 	while(count > 0){
 		u64 * ptr = os_alloc(sizeof(u64));
@@ -625,6 +627,8 @@ int sys_read_ftrace(struct file *filep, char *buff, u64 count)
 {
 	if(filep == NULL) return -EINVAL;
 	if(count < 0) return -EINVAL;
+	int access_flag = is_valid_mem_range((unsigned long) buff, count, 2);
+	if(access_flag != 1) return -EINVAL;
 	int buff_pos = 0;
 	while(count > 0){
 		u64 * ptr = os_alloc(sizeof(u64));
